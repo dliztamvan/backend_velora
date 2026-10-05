@@ -1,34 +1,61 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
-command -v npx >/dev/null 2>&1 || { echo 'ERROR: Node/npm tidak ditemukan.'; exit 1; }
+echo "======================================"
+echo " VeloraGames Backend Deploy"
+echo "======================================"
 
-TMP="worker/.wrangler.deploy.toml"
-trap 'rm -f "$TMP"' EXIT
-
-echo "Mencari D1 database bernama velora..."
-D1_JSON="$(npx wrangler d1 list --json)"
-D1_ID="$(printf '%s' "$D1_JSON" | node -e '
-let s="";
-process.stdin.on("data",d=>s+=d).on("end",()=>{
-  try {
-    const a=JSON.parse(s);
-    const rows=Array.isArray(a)?a:(a.result||a.results||[]);
-    const x=rows.find(x=>x.name==="velora"||x.database_name==="velora");
-    if(!x || !(x.uuid||x.id)) process.exit(2);
-    process.stdout.write(x.uuid||x.id);
-  } catch(e) { process.exit(2); }
-});
-')" || {
-  echo 'ERROR: D1 database "velora" tidak ditemukan.'
-  echo 'Pastikan database tersebut sudah dibuat dan akun Wrangler sudah login.'
+command -v npx >/dev/null 2>&1 || {
+  echo "ERROR: Node/npm tidak ditemukan."
   exit 1
 }
 
-echo "D1 ID ditemukan: $D1_ID"
+echo "[1/4] Mencari D1 database 'velora'..."
 
-cat > "$TMP" <<TOML
-name = "velora-backend"
+D1_JSON="$(npx wrangler d1 list --json)"
+
+D1_ID="$(
+  printf '%s' "$D1_JSON" |
+  node <<'NODE'
+let input = "";
+
+process.stdin.on("data", chunk => {
+  input += chunk;
+});
+
+process.stdin.on("end", () => {
+  try {
+    const data = JSON.parse(input);
+    const list = Array.isArray(data)
+      ? data
+      : (data.result || data.results || []);
+
+    const db = list.find(x =>
+      x.name === "velora" ||
+      x.database_name === "velora"
+    );
+
+    if (!db || !db.uuid) {
+      process.exit(1);
+    }
+
+    process.stdout.write(db.uuid);
+  } catch {
+    process.exit(1);
+  }
+});
+NODE
+)" || {
+  echo ""
+  echo "ERROR: D1 database 'velora' tidak ditemukan."
+  exit 1
+}
+
+echo "D1 ID:"
+echo "$D1_ID"
+
+cat > worker/.wrangler.deploy.toml <<EOF
+name = "backendbuildapk"
 main = "index.js"
 compatibility_date = "2026-09-30"
 
@@ -36,8 +63,15 @@ compatibility_date = "2026-09-30"
 binding = "DB"
 database_name = "velora"
 database_id = "$D1_ID"
-TOML
+EOF
 
-echo "Deploy Worker..."
+echo "[2/4] Deploy Worker..."
+
 cd worker
+
 npx wrangler deploy --config .wrangler.deploy.toml
+
+echo ""
+echo "======================================"
+echo " DEPLOY BERHASIL"
+echo "======================================"
